@@ -7,7 +7,7 @@ type Props = {
   onClick?: () => void
 }
 
-const defaultStyles = ""
+const defaultStyles = "border-2 rounded-xl p-2 cursor-pointer"
 
 const Button = ({ children, className, onClick, ...props }: Props) => {
   return (

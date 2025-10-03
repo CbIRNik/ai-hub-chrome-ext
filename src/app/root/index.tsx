@@ -1,12 +1,11 @@
-import { MainPage } from '@/pages/main'
 import './index.css'
-
+import { Outlet } from '../routing'
 
 
 const App = () => {
   return (
     <>
-      <MainPage />
+      <Outlet />
     </>
   )
 }
