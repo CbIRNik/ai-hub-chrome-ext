@@ -2,38 +2,41 @@ import { useRouter } from '@/app/routing'
 import { useState, useRef, useEffect } from 'react'
 import { useLLM } from '@/shared/hooks/useLLM'
 import { useChatStore } from '@/shared/store/chat'
-import { getPageContent } from '@/shared/api/page'
+
 import { Markdown } from '@/shared/ui/markdown'
 
 
 
 const MainPage = () => {
   const [input, setInput] = useState('');
-  const [includePageContext, setIncludePageContext] = useState(false);
   const [enableBrowserControl, setEnableBrowserControl] = useState(false);
-  const [pageContent, setPageContent] = useState('');
+  const [taskSteps, setTaskSteps] = useState<string[]>([]);
 
   const { replace } = useRouter()
   const { isLoading, sendMessage } = useLLM()
   const { messages, addMessage, clearHistory } = useChatStore()
 
   useEffect(() => {
-    chrome.storage.local.get(['includePageContext', 'enableBrowserControl']).then(async result => {
-      try {
-        if (result.includePageContext !== undefined) {
-          setIncludePageContext(result.includePageContext)
-          if (result.includePageContext) {
-            const content = await getPageContent()
-            setPageContent(content)
-          }
-        }
-        if (result.enableBrowserControl !== undefined) setEnableBrowserControl(result.enableBrowserControl)
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to load settings'
-        addMessage('assistant', `❌ Error: ${errorMessage}`)
-      }
+    chrome.storage.local.get(['enableBrowserControl']).then(result => {
+      if (result.enableBrowserControl !== undefined) setEnableBrowserControl(result.enableBrowserControl)
     })
-  }, [addMessage])
+    
+    // Listen for task steps and partial results from background
+    const handleMessage = (message: any) => {
+      if (message.type === 'TASK_STEP') {
+        setTaskSteps(prev => [...prev, ...message.payload.steps])
+      } else if (message.type === 'PARTIAL_RESULT') {
+        // Add partial result as assistant message
+        addMessage('assistant', message.payload.result)
+      } else if (message.type === 'MESSAGE_SAVED') {
+        // Message already saved in background, just update UI if needed
+        console.log('Message saved to history:', message.payload)
+      }
+    }
+    
+    chrome.runtime.onMessage.addListener(handleMessage)
+    return () => chrome.runtime.onMessage.removeListener(handleMessage)
+  }, [])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -45,6 +48,7 @@ const MainPage = () => {
 
     const userMessage = input.trim()
     setInput('')
+    setTaskSteps([])
     addMessage('user', userMessage)
 
     try {
@@ -53,12 +57,7 @@ const MainPage = () => {
         content: m.content
       }))
 
-      let finalMessage = userMessage
-      if (includePageContext && pageContent) {
-        finalMessage = `${pageContent}\n\nUser request: ${userMessage}`
-      }
-
-      contextMessages.push({ role: 'user', content: finalMessage })
+      contextMessages.push({ role: 'user', content: userMessage })
 
       const result = await sendMessage(contextMessages, enableBrowserControl)
       if (result) {
@@ -70,20 +69,7 @@ const MainPage = () => {
     }
   }
 
-  const handleTogglePageContext = async () => {
-    try {
-      const newValue = !includePageContext
-      if (newValue) {
-        const content = await getPageContent()
-        setPageContent(content)
-      }
-      setIncludePageContext(newValue)
-      chrome.storage.local.set({ includePageContext: newValue })
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to get page content'
-      addMessage('assistant', `❌ Error: ${errorMessage}`)
-    }
-  }
+
 
   const handleToggleBrowserControl = (newValue: boolean) => {
     setEnableBrowserControl(newValue)
@@ -161,11 +147,22 @@ const MainPage = () => {
         {isLoading && (
           <div className="flex justify-start">
             <div className="bg-gray-800 border border-gray-700 p-3 rounded-lg">
-              <div className="flex space-x-1">
+              <div className="flex space-x-1 mb-2">
                 <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
                 <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                 <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
               </div>
+              {taskSteps.length > 0 && (
+                <div className="text-xs text-gray-400">
+                  <div className="font-medium mb-1">Executing steps:</div>
+                  {taskSteps.map((step, index) => (
+                    <div key={index} className="flex items-center space-x-2 mb-1">
+                      <div className="w-1 h-1 bg-green-500 rounded-full"></div>
+                      <span>{step}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -175,18 +172,6 @@ const MainPage = () => {
       {/* Input */}
       <div className="p-4 border-t border-gray-700">
         <div className="flex items-center space-x-2 mb-2">
-          <button
-            onClick={handleTogglePageContext}
-            className={`flex items-center space-x-2 px-3 py-1 rounded-lg text-xs transition-colors ${includePageContext
-              ? 'bg-green-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <span>{includePageContext ? 'Page context ON' : 'Include page context'}</span>
-          </button>
           <button
             onClick={() => handleToggleBrowserControl(!enableBrowserControl)}
             className={`flex items-center space-x-2 px-3 py-1 rounded-lg text-xs transition-colors ${enableBrowserControl
