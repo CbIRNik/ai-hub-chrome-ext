@@ -1,75 +1,61 @@
-# React + TypeScript + Vite
+# 🤖 AI Browser Extension
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> Умное расширение для браузера, которое управляет веб-страницами с помощью искусственного интеллекта
 
-Currently, two official plugins are available:
+## 🎯 Что это?
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+AI Extension — это революционное расширение для браузера, которое позволяет управлять веб-страницами с помощью естественного языка. Просто напишите, что вы хотите сделать, и ИИ выполнит это за вас.
 
-## React Compiler
+## ✨ Возможности
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+- 🎯 **Автоматизация действий** - клики, заполнение форм, навигация
+- 🔍 **Умный поиск** - находит элементы по описанию
+- 📝 **Заполнение форм** - автоматически вводит данные
+- 🛒 **Покупки онлайн** - помогает с заказами и оплатой
+- 📧 **Работа с почтой** - отправка писем и управление
 
-Note: This will impact Vite dev & build performances.
+## 🎬 Сценарии использования
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 📧 Отправка email
+```
+"Открой Gmail и отправь письмо с темой 'Встреча завтра'"
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 🛒 Онлайн покупки
 ```
+"Найди на Ozon беспроводные наушники до 5000 рублей и добавь в корзину"
+```
+
+### 📊 Работа с данными
+```
+"Заполни эту форму: имя - Иван, телефон - +7900..., email "
+```
+
+### 🔍 Поиск информации
+```
+"Найди на этой странице все ссылки на документы PDF"
+```
+
+## 🚀 Установка
+
+1. Скачайте расширение из Chrome Web Store
+2. Нажмите "Добавить в Chrome"
+3. Разрешите доступ к микрофону
+4. Готово! Нажмите на иконку расширения
+
+## 🎮 Как пользоваться
+
+1. **Откройте любую веб-страницу**
+2. **Нажмите на иконку AI Extension**
+3. **Скажите или напишите команду**
+4. **Наблюдайте, как ИИ выполняет действие**
+
+## 🔒 Безопасность
+
+- Все данные обрабатываются локально
+- Никакая личная информация не передается на сторонние серверы
+- Полный контроль над разрешениями
+
+## 📄 Лицензия
+
+MIT
