@@ -89,14 +89,33 @@ async function processLLMRequest(config, messages, enableBrowserControl) {
   
   if (config.provider === 'gemini') {
     return processGeminiRequest(config, messages, enableBrowserControl)
-  } else {
+  } else if (config.provider === 'openai' || config.provider === 'anthropic' || config.provider === 'cohere') {
     return processOpenAIRequest(config, messages, enableBrowserControl)
+  } else {
+    // OpenRouter and other providers - check if model supports function calling
+    const supportsTools = config.model && (
+      config.model.includes('gpt-') || 
+      config.model.includes('claude-') ||
+      config.model.includes('command')
+    )
+    
+    if (supportsTools) {
+      try {
+        return await processOpenAIRequest(config, messages, enableBrowserControl)
+      } catch (error) {
+        console.log('Function calling failed, using text parsing:', error.message)
+        return await processGenericRequest(config, messages, enableBrowserControl)
+      }
+    } else {
+      // Models like Gemma don't support function calling - use text parsing
+      return await processGenericRequest(config, messages, enableBrowserControl)
+    }
   }
 }
 
 async function processGeminiRequest(config, messages, enableBrowserControl, depth = 0) {
   // Prevent infinite loops
-  if (depth > 3) {
+  if (depth > 30) {
     console.log('Max chain depth reached, stopping')
     return 'Task completed - maximum steps reached'
   }
@@ -205,6 +224,29 @@ async function processGeminiRequest(config, messages, enableBrowserControl, dept
             type: 'object',
             properties: {}
           }
+        },
+        {
+          name: 'delay',
+          description: 'Wait for specified time in milliseconds',
+          parameters: {
+            type: 'object',
+            properties: {
+              ms: { type: 'number', description: 'Milliseconds to wait (e.g. 1000 = 1 second)' }
+            },
+            required: ['ms']
+          }
+        },
+        {
+          name: 'typeText',
+          description: 'Type text into input field or active element',
+          parameters: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'Text to type' },
+              selector: { type: 'string', description: 'CSS selector for input field (optional)' }
+            },
+            required: ['text']
+          }
         }
       ]
     }]
@@ -257,7 +299,7 @@ async function processGeminiRequest(config, messages, enableBrowserControl, dept
       }).catch(() => {})
       
       // Continue chain only if depth allows
-      if (depth < 3) {
+      if (depth < 20) {
         // Auto-load page context after actions
         let pageContext = ''
         try {
@@ -290,8 +332,27 @@ async function processGeminiRequest(config, messages, enableBrowserControl, dept
   return result
 }
 
-async function processOpenAIRequest(config, messages, enableBrowserControl) {
+async function processGenericRequest(config, messages, enableBrowserControl, depth = 0) {
+  if (depth > 20) {
+    console.log('Max chain depth reached, stopping')
+    return 'Task completed - maximum steps reached'
+  }
+  
+  // Add system message with available commands for text-based models
+  const enhancedMessages = [...messages]
+  if (enableBrowserControl && enhancedMessages[0]?.role !== 'system') {
+    enhancedMessages.unshift({
+      role: 'system',
+      content: 'You are a precise browser automation assistant. Use these commands in your response:\n\nCOMMANDS (case-insensitive):\n- NAVIGATE:url or NAV:url - navigate to URL\n- CLICK:text or TAP:text - click element with text\n- TYPE:text or INPUT:text - type into input field\n- SEARCH:query - search Google\n- DELAY:ms or WAIT:ms - wait milliseconds\n- SCREENSHOT or CAPTURE - take screenshot\n- CONTEXT or PAGE - load page content\n\nRELIABLE PATTERNS:\n- Navigation: "NAVIGATE:https://site.com DELAY:3000"\n- Search: "CLICK:search box TYPE:query DELAY:1000 CLICK:search button"\n- Form: "CLICK:username TYPE:user CLICK:password TYPE:pass CLICK:login"\n\nALWAYS use DELAY:2000-3000 after navigation. Use DELAY:1000 between actions. Execute step by step until task complete.'
+    })
+  }
+  
   const url = config.baseURL || 'https://api.openai.com/v1'
+  const requestBody = {
+    model: config.model || 'gpt-4o-mini',
+    messages: enhancedMessages,
+    temperature: 0.7
+  }
   
   const response = await fetch(`${url}/chat/completions`, {
     method: 'POST',
@@ -299,11 +360,243 @@ async function processOpenAIRequest(config, messages, enableBrowserControl) {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.apiKey}`
     },
-    body: JSON.stringify({
-      model: config.model || 'gpt-4o-mini',
-      messages,
-      temperature: 0.7
-    })
+    body: JSON.stringify(requestBody)
+  })
+  
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`API error: ${response.status} ${errorText}`)
+  }
+  
+  const data = await response.json()
+  console.log('Generic response:', data)
+  
+  let result = data.choices?.[0]?.message?.content || 'No content returned'
+  
+  if (enableBrowserControl) {
+    const actions = await parseAndExecuteTextCommands(result)
+    if (actions.length > 0) {
+      chrome.runtime.sendMessage({
+        type: 'TASK_STEP',
+        payload: { steps: actions, partial: true }
+      }).catch(() => {})
+      
+      // Continue chain if actions were executed
+      if (depth < 20) {
+        let pageContext = ''
+        try {
+          const contextResult = await executeBrowserFunction('loadPageContext', {})
+          pageContext = contextResult
+        } catch (error) {
+          console.log('Failed to load page context:', error.message)
+        }
+        
+        const followUpMessages = [...enhancedMessages, {
+          role: 'assistant',
+          content: result
+        }, {
+          role: 'user',
+          content: `Actions executed: ${actions.join(', ')}.\n\n${pageContext}\n\nContinue with next steps if needed.`
+        }]
+        
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        
+        try {
+          const followUpResponse = await processGenericRequest(config, followUpMessages, enableBrowserControl, depth + 1)
+          result = `${result}\n\n${followUpResponse}`
+        } catch (error) {
+          console.log('Follow-up failed, stopping chain:', error.message)
+        }
+      }
+    }
+  }
+  
+  return result
+}
+
+async function parseAndExecuteTextCommands(text) {
+  const actions = []
+  const commands = [
+    { pattern: /(?:NAVIGATE|NAV|GO):([^\s\n]+)/gi, func: 'navigateToUrl', arg: 'url' },
+    { pattern: /(?:CLICK|TAP):([^\n]+)/gi, func: 'findAndClick', arg: 'text' },
+    { pattern: /(?:TYPE|INPUT|ENTER):([^\n]+)/gi, func: 'typeText', arg: 'text' },
+    { pattern: /(?:SEARCH|FIND):([^\n]+)/gi, func: 'googleSearch', arg: 'query' },
+    { pattern: /(?:DELAY|WAIT):(\d+)/gi, func: 'delay', arg: 'ms' },
+    { pattern: /(?:SCREENSHOT|SCREEN|CAPTURE)/gi, func: 'takeScreenshot', arg: null },
+    { pattern: /(?:CONTEXT|PAGE|CONTENT)/gi, func: 'loadPageContext', arg: null }
+  ]
+  
+  for (const cmd of commands) {
+    let match
+    while ((match = cmd.pattern.exec(text)) !== null) {
+      try {
+        let args = {}
+        if (cmd.arg) {
+          const value = match[1]?.trim()
+          args[cmd.arg] = cmd.arg === 'ms' ? parseInt(value) : value.replace(/["']/g, '')
+        }
+        const result = await executeBrowserFunction(cmd.func, args)
+        actions.push(result)
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      } catch (error) {
+        actions.push(`Error: ${error.message}`)
+      }
+    }
+  }
+  
+  return actions
+}
+
+async function processOpenAIRequest(config, messages, enableBrowserControl, depth = 0) {
+  if (depth > 20) {
+    console.log('Max chain depth reached, stopping')
+    return 'Task completed - maximum steps reached'
+  }
+  
+  const url = config.baseURL || 'https://api.openai.com/v1'
+  const requestBody = {
+    model: config.model || 'gpt-4o-mini',
+    messages,
+    temperature: 0.7
+  }
+  
+  if (enableBrowserControl) {
+    requestBody.tools = [{
+      type: 'function',
+      function: {
+        name: 'openLink',
+        description: 'Open a URL in a NEW TAB',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'URL to open in new tab' }
+          },
+          required: ['url']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'navigateToUrl',
+        description: 'Navigate to URL in CURRENT TAB',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'URL to navigate to' }
+          },
+          required: ['url']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'findAndClick',
+        description: 'Find and click element by text',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Text to search for' }
+          },
+          required: ['text']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'loadPageContext',
+        description: 'Load current page content into context',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'takeScreenshot',
+        description: 'Take screenshot of current page',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'clickElement',
+        description: 'Click element by CSS selector',
+        parameters: {
+          type: 'object',
+          properties: {
+            selector: { type: 'string', description: 'CSS selector' }
+          },
+          required: ['selector']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'googleSearch',
+        description: 'Search on Google',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query' }
+          },
+          required: ['query']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'solveCaptcha',
+        description: 'Solve captcha automatically',
+        parameters: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', description: 'Captcha type', enum: ['recaptcha', 'hcaptcha', 'image', 'auto'] }
+          },
+          required: ['type']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'delay',
+        description: 'Wait for specified time',
+        parameters: {
+          type: 'object',
+          properties: {
+            ms: { type: 'number', description: 'Milliseconds to wait' }
+          },
+          required: ['ms']
+        }
+      }
+    }, {
+      type: 'function',
+      function: {
+        name: 'typeText',
+        description: 'Type text into input field',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Text to type' },
+            selector: { type: 'string', description: 'CSS selector for input field (optional)' }
+          },
+          required: ['text']
+        }
+      }
+    }]
+    requestBody.tool_choice = 'auto'
+  }
+  
+  const response = await fetch(`${url}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify(requestBody)
   })
   
   if (!response.ok) {
@@ -314,10 +607,61 @@ async function processOpenAIRequest(config, messages, enableBrowserControl) {
   const data = await response.json()
   console.log('OpenAI response:', data)
   
-  const result = data.choices?.[0]?.message?.content || 'No content returned'
+  const message = data.choices?.[0]?.message
+  let result = message?.content || 'No content returned'
   
-  if (enableBrowserControl) {
-    await executeBrowserActions(result)
+  // Execute function calls if present
+  if (message?.tool_calls) {
+    const results = []
+    
+    for (const toolCall of message.tool_calls) {
+      const { name, arguments: args } = toolCall.function
+      const parsedArgs = JSON.parse(args)
+      const actionResult = await executeBrowserFunction(name, parsedArgs)
+      results.push(actionResult)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    
+    if (results.length > 0) {
+      chrome.runtime.sendMessage({
+        type: 'TASK_STEP',
+        payload: { steps: results, partial: true }
+      }).catch(() => {})
+      
+      result = `${result || 'Step completed'}\n\nActions: ${results.join(', ')}`
+      
+      chrome.runtime.sendMessage({
+        type: 'PARTIAL_RESULT',
+        payload: { result }
+      }).catch(() => {})
+      
+      if (depth < 20) {
+        let pageContext = ''
+        try {
+          const contextResult = await executeBrowserFunction('loadPageContext', {})
+          pageContext = contextResult
+        } catch (error) {
+          console.log('Failed to load page context:', error.message)
+        }
+        
+        const followUpMessages = [...messages, {
+          role: 'assistant',
+          content: result
+        }, {
+          role: 'user',
+          content: `Function results: ${results.join(', ')}.\n\n${pageContext}\n\nContinue with the next step to complete the task based on current page content.`
+        }]
+        
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        
+        try {
+          const followUpResponse = await processOpenAIRequest(config, followUpMessages, enableBrowserControl, depth + 1)
+          result = `${result}\n\n${followUpResponse}`
+        } catch (error) {
+          console.log('Follow-up failed, stopping chain:', error.message)
+        }
+      }
+    }
   }
   
   return result
@@ -521,6 +865,52 @@ async function executeBrowserFunction(name, args) {
         })
         
         return `Screenshot taken: ${screenshot.substring(0, 100)}...`
+        
+      case 'delay':
+        const ms = args.ms || 1000
+        await new Promise(resolve => setTimeout(resolve, ms))
+        return `Waited ${ms}ms`
+        
+      case 'typeText':
+        const [typeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+        const typeResults = await chrome.scripting.executeScript({
+          target: { tabId: typeTab.id },
+          func: (text, selector) => {
+            let targetElement
+            
+            if (selector) {
+              targetElement = document.querySelector(selector)
+            } else {
+              // Find active element or first input/editable
+              targetElement = document.activeElement
+              if (!targetElement || (!['INPUT', 'TEXTAREA'].includes(targetElement.tagName) && !targetElement.contentEditable)) {
+                targetElement = document.querySelector('input, textarea, [contenteditable="true"], [contenteditable=""]')
+              }
+            }
+            
+            if (targetElement) {
+              targetElement.focus()
+              
+              if (targetElement.contentEditable === 'true' || targetElement.contentEditable === '') {
+                // Handle contenteditable div
+                targetElement.textContent = text
+                targetElement.dispatchEvent(new Event('input', { bubbles: true }))
+                return `Typed "${text}" into contenteditable element${selector ? ` (${selector})` : ''}`
+              } else {
+                // Handle input/textarea
+                targetElement.value = text
+                targetElement.dispatchEvent(new Event('input', { bubbles: true }))
+                targetElement.dispatchEvent(new Event('change', { bubbles: true }))
+                return `Typed "${text}" into ${targetElement.tagName.toLowerCase()}${selector ? ` (${selector})` : ''}`
+              }
+            }
+            
+            return `No input field found${selector ? ` with selector: ${selector}` : ''}`
+          },
+          args: [args.text, args.selector]
+        })
+        
+        return typeResults[0]?.result || 'Type failed'
         
       default:
         return `Unknown function: ${name}`

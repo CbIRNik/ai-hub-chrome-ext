@@ -31,6 +31,10 @@ const MainPage = () => {
       } else if (message.type === 'MESSAGE_SAVED') {
         // Message already saved in background, just update UI if needed
         console.log('Message saved to history:', message.payload)
+      } else if (message.type === 'TASK_COMPLETED') {
+        // Task execution completed
+        setTaskSteps([])
+        console.log('Task completed:', message.payload)
       }
     }
     
